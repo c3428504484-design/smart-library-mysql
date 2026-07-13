@@ -10,7 +10,9 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Index, case, func
 from werkzeug.security import check_password_hash, generate_password_hash
 from openpyxl import Workbook
+from dotenv import load_dotenv
 
+load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-before-production')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
@@ -232,7 +234,7 @@ def ai_insights():
     return render_template(
         'ai.html',
         **report,
-        ai_api_configured=bool(os.getenv('AI_API_KEY')),
+        ai_api_configured=bool(os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY')),
         generated_advice=session.pop('ai_generated_advice', None),
     )
 
@@ -288,10 +290,10 @@ def borrowing_report():
 @app.post('/ai-insights/generate')
 @login_required
 def generate_ai_advice():
-    """可选的 OpenAI 兼容 API 接口；未配置密钥时不会发出网络请求。"""
-    api_key = os.getenv('AI_API_KEY')
+    """调用 DeepSeek Chat API；未配置密钥时不会发出网络请求。"""
+    api_key = os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY')
     if not api_key:
-        flash('尚未配置 AI_API_KEY，当前页面仍可使用本地数据洞察。', 'danger')
+        flash('尚未配置 DEEPSEEK_API_KEY，当前页面仍可使用本地数据洞察。', 'danger')
         return redirect(url_for('ai_insights'))
 
     report = borrowing_report()
@@ -304,11 +306,11 @@ def generate_ai_advice():
         f"近30天最受欢迎图书：{report['lead_title']}。"
     )
     payload = json.dumps({
-        'model': os.getenv('AI_MODEL', 'gpt-4o-mini'),
+        'model': os.getenv('DEEPSEEK_MODEL', os.getenv('AI_MODEL', 'deepseek-chat')),
         'messages': [{'role': 'user', 'content': prompt}],
         'temperature': 0.3,
     }).encode('utf-8')
-    base = os.getenv('AI_API_BASE', 'https://api.openai.com/v1').rstrip('/')
+    base = os.getenv('DEEPSEEK_API_BASE', 'https://api.deepseek.com').rstrip('/')
     req = urlrequest.Request(
         f'{base}/chat/completions', data=payload,
         headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, method='POST',
