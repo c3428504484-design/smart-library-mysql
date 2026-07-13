@@ -1,1 +1,30 @@
-{% extends 'base.html' %}{% block content %}<div class="grid">{% for k,v,label in [('books',stats.books,'馆藏图书'),('readers',stats.readers,'注册读者'),('active',stats.active,'借阅中'),('overdue',stats.overdue,'逾期预警')] %}<div class="card metric"><b class="accent">{{v}}</b><p>{{label}}</p></div>{% endfor %}</div><div class="card" style="margin-top:20px"><h3>热门图书排行</h3><canvas id="chart"></canvas></div><script>new Chart(document.querySelector('#chart'),{type:'bar',data:{labels:{{popular|map(attribute=0)|list|tojson}},datasets:[{label:'借阅次数',data:{{popular|map(attribute=1)|list|tojson}},backgroundColor:'#315fe9',borderRadius:8}]}})</script>{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}数据驾驶舱{% endblock %}
+{% block content %}
+<section class="cockpit-hero">
+  <div><div class="eyebrow hero-eyebrow">LIBRARY PULSE · {{ stats.total_qty }} 册资产实时在线</div><h3>图书馆运营，一眼掌握</h3><p>今日在借 {{ stats.active }} 册，库存可借 {{ stats.available_qty }} 册，系统正持续追踪流转健康度。</p></div>
+  <div class="hero-rate"><span>当前借阅率</span><strong>{{ stats.loan_rate }}%</strong><small>借阅中 / 总库存</small></div>
+</section>
+<div class="grid metric-grid">
+  {% for value,label,note,tone in [(stats.books,'馆藏品种','覆盖全部分类','blue'),(stats.readers,'注册读者',stats.normal_readers ~ ' 位状态正常','purple'),(stats.active,'流转中的图书','正在被读者阅读','cyan'),(stats.overdue,'逾期预警','需要优先联系','orange')] %}
+  <div class="card metric metric-{{ tone }}"><span class="metric-dot"></span><b>{{ value }}</b><p>{{ label }}</p><small>{{ note }}</small></div>
+  {% endfor %}
+</div>
+<div class="chart-layout dashboard-space">
+  <section class="card chart-card wide"><div class="chart-head"><div><h3>近 7 日借阅趋势</h3><p>每日新发生的借阅记录</p></div><span class="tag">实时统计</span></div><canvas id="trendChart"></canvas></section>
+  <section class="card chart-card"><div class="chart-head"><div><h3>馆藏分类分布</h3><p>按图书库存数量统计</p></div></div><canvas id="categoryChart"></canvas></section>
+</div>
+<div class="chart-layout lower-layout">
+  <section class="card chart-card"><div class="chart-head"><div><h3>库存使用占比</h3><p>可借库存与借出数量</p></div></div><canvas id="inventoryChart"></canvas></section>
+  <section class="card chart-card"><div class="chart-head"><div><h3>借阅状态构成</h3><p>当前流转健康度</p></div></div><canvas id="statusChart"></canvas></section>
+  <section class="card ranking-card"><div class="chart-head"><div><h3>热门图书 TOP 5</h3><p>按累计借阅次数排序</p></div><span class="tag">借阅热度</span></div>{% for title,count in popular %}<div class="rank-row"><span class="rank-number">{{ loop.index }}</span><div><strong>{{ title }}</strong><div class="rank-bar"><i style="width:{{ (count / popular[0][1] * 100) if popular else 0 }}%"></i></div></div><b>{{ count }}</b></div>{% else %}<p class="empty">暂未产生借阅数据</p>{% endfor %}</section>
+</div>
+<script>
+const palette=['#315fe9','#7c5cff','#23b7d9','#ff9f43','#3bc57a','#e95f8b'];
+const noLegend={plugins:{legend:{display:false}},responsive:true,maintainAspectRatio:false};
+new Chart(document.querySelector('#trendChart'),{type:'line',data:{labels:{{ trend|map(attribute='label')|list|tojson }},datasets:[{label:'借阅数',data:{{ trend|map(attribute='count')|list|tojson }},borderColor:'#315fe9',backgroundColor:'rgba(49,95,233,.12)',fill:true,tension:.42,pointBackgroundColor:'#fff',pointBorderWidth:3,pointRadius:4}]},options:{...noLegend,scales:{y:{beginAtZero:true,ticks:{precision:0},grid:{color:'#edf1f8'},border:{display:false}},x:{grid:{display:false},border:{display:false}}}}});
+new Chart(document.querySelector('#categoryChart'),{type:'doughnut',data:{labels:{{ category_rows|map(attribute=0)|list|tojson }},datasets:[{data:{{ category_rows|map(attribute=1)|list|tojson }},backgroundColor:palette,borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:false,cutout:'66%',plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:18}}}}});
+new Chart(document.querySelector('#inventoryChart'),{type:'doughnut',data:{labels:{{ inventory|map(attribute=0)|list|tojson }},datasets:[{data:{{ inventory|map(attribute=1)|list|tojson }},backgroundColor:['#35c680','#e9effc'],borderWidth:0,hoverOffset:7}]},options:{responsive:true,maintainAspectRatio:false,cutout:'68%',plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:18}}}}});
+new Chart(document.querySelector('#statusChart'),{type:'pie',data:{labels:{{ loan_status|map(attribute=0)|list|tojson }},datasets:[{data:{{ loan_status|map(attribute=1)|list|tojson }},backgroundColor:['#315fe9','#7c5cff','#ff9f43'],borderWidth:3,borderColor:'#fff'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:16}}}}});
+</script>
+{% endblock %}

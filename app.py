@@ -1,5 +1,7 @@
 import os
 import json
+import base64
+import hashlib
 from io import BytesIO
 from functools import wraps
 from datetime import date, timedelta
@@ -11,6 +13,7 @@ from sqlalchemy import Index, case, func
 from werkzeug.security import check_password_hash, generate_password_hash
 from openpyxl import Workbook
 from dotenv import load_dotenv
+from cryptography.fernet import Fernet, InvalidToken
 
 load_dotenv()
 app = Flask(__name__)
@@ -37,6 +40,31 @@ class Admin(db.Model):
     username = db.Column(db.String(40), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     created_at = db.Column(db.Date, default=date.today, nullable=False)
+
+
+class ApiCredential(db.Model):
+    """每位管理员各自保存的 AI 密钥；数据库中只保留加密后的内容。"""
+    __tablename__ = 'api_credentials'
+    id = db.Column(db.Integer, primary_key=True)
+    admin_id = db.Column(db.Integer, db.ForeignKey('admins.id', ondelete='CASCADE'), unique=True, nullable=False, index=True)
+    encrypted_key = db.Column(db.String(500), nullable=False)
+    updated_at = db.Column(db.Date, default=date.today, onupdate=date.today, nullable=False)
+
+
+def credential_cipher():
+    secret = app.config['SECRET_KEY'].encode('utf-8')
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret).digest()))
+
+
+def current_admin_api_key():
+    """优先使用当前管理员的私有密钥；未保存时才回退到部署环境变量。"""
+    credential = ApiCredential.query.filter_by(admin_id=session['admin_id']).first()
+    if credential:
+        try:
+            return credential_cipher().decrypt(credential.encrypted_key.encode('utf-8')).decode('utf-8')
+        except (InvalidToken, ValueError):
+            return None
+    return os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY')
 
 
 class Category(db.Model):
@@ -157,11 +185,23 @@ def logout():
 @login_required
 def dashboard():
     today = date.today()
+    active = Loan.query.filter_by(status='借阅中').count()
+    overdue = Loan.query.filter(Loan.status == '借阅中', Loan.due_at < today).count()
+    total_qty, available_qty = db.session.query(
+        func.coalesce(func.sum(Book.total_qty), 0),
+        func.coalesce(func.sum(Book.available_qty), 0),
+    ).one()
+    normal_readers = Reader.query.filter_by(status='正常').count()
     stats = {'books': Book.query.count(), 'readers': Reader.query.count(),
-             'active': Loan.query.filter_by(status='借阅中').count(),
-             'overdue': Loan.query.filter(Loan.status == '借阅中', Loan.due_at < today).count()}
+             'active': active, 'overdue': overdue, 'loan_rate': round(active / total_qty * 100, 1) if total_qty else 0,
+             'available_qty': available_qty, 'total_qty': total_qty, 'normal_readers': normal_readers}
     popular = db.session.query(Book.title, func.count(Loan.id).label('n')).join(Loan).group_by(Book.id).order_by(func.count(Loan.id).desc()).limit(5).all()
-    return render_template('dashboard.html', stats=stats, popular=popular)
+    category_rows = db.session.query(Category.name, func.coalesce(func.sum(Book.total_qty), 0)).outerjoin(Book).group_by(Category.id, Category.name).order_by(Category.id).all()
+    loan_status = [('借阅中', active), ('已归还', Loan.query.filter_by(status='已归还').count()), ('逾期未还', overdue)]
+    trend = [{'label': (today - timedelta(days=offset)).strftime('%m/%d'), 'count': Loan.query.filter(Loan.borrowed_at == today - timedelta(days=offset)).count()} for offset in range(6, -1, -1)]
+    inventory = [('可借库存', available_qty), ('已借出', max(total_qty - available_qty, 0))]
+    return render_template('dashboard.html', stats=stats, popular=popular, category_rows=category_rows,
+                           loan_status=loan_status, trend=trend, inventory=inventory)
 
 
 @app.route('/books', methods=['GET', 'POST'])
@@ -231,10 +271,12 @@ def return_loan(id):
 @login_required
 def ai_insights():
     report = borrowing_report()
+    own_credential = ApiCredential.query.filter_by(admin_id=session['admin_id']).first()
     return render_template(
         'ai.html',
         **report,
-        ai_api_configured=bool(os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY')),
+        ai_api_configured=bool(current_admin_api_key()),
+        own_api_configured=bool(own_credential),
         generated_advice=session.pop('ai_generated_advice', None),
     )
 
@@ -287,13 +329,31 @@ def borrowing_report():
     }
 
 
+@app.post('/ai-insights/api-key')
+@login_required
+def save_ai_api_key():
+    api_key = request.form.get('api_key', '').strip()
+    if len(api_key) < 12:
+        flash('请输入有效的 DeepSeek API Key。', 'danger')
+        return redirect(url_for('ai_insights'))
+    credential = ApiCredential.query.filter_by(admin_id=session['admin_id']).first()
+    encrypted_key = credential_cipher().encrypt(api_key.encode('utf-8')).decode('utf-8')
+    if credential:
+        credential.encrypted_key = encrypted_key
+    else:
+        db.session.add(ApiCredential(admin_id=session['admin_id'], encrypted_key=encrypted_key))
+    db.session.commit()
+    flash('你的 DeepSeek API Key 已加密保存，仅当前管理员账号可用。', 'success')
+    return redirect(url_for('ai_insights'))
+
+
 @app.post('/ai-insights/generate')
 @login_required
 def generate_ai_advice():
     """调用 DeepSeek Chat API；未配置密钥时不会发出网络请求。"""
-    api_key = os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY')
+    api_key = current_admin_api_key()
     if not api_key:
-        flash('尚未配置 DEEPSEEK_API_KEY，当前页面仍可使用本地数据洞察。', 'danger')
+        flash('请先在 AI 洞察页填写你的 DeepSeek API Key。', 'danger')
         return redirect(url_for('ai_insights'))
 
     report = borrowing_report()
