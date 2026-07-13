@@ -1,10 +1,13 @@
 import os
+import json
 from io import BytesIO
 from functools import wraps
 from datetime import date, timedelta
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from flask import Flask, flash, redirect, render_template, request, url_for, session, send_file
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Index, func
+from sqlalchemy import Index, case, func
 from werkzeug.security import check_password_hash, generate_password_hash
 from openpyxl import Workbook
 
@@ -205,7 +208,12 @@ def loans():
         else:
             db.session.add(Loan(reader=reader, book=book, due_at=date.today() + timedelta(days=30))); book.available_qty -= 1; db.session.commit(); flash('借阅成功', 'success')
         return redirect(url_for('loans'))
-    rows = Loan.query.order_by(Loan.id.desc()).all()
+    # 先展示仍在借阅的记录，再展示已归还记录；各分组内按借出日期倒序。
+    rows = Loan.query.order_by(
+        case((Loan.status == '借阅中', 0), else_=1),
+        Loan.borrowed_at.desc(),
+        Loan.id.desc(),
+    ).all()
     return render_template('loans.html', loans=rows, readers=Reader.query.filter_by(status='正常').all(), books=Book.query.filter(Book.available_qty > 0).all(), today=date.today())
 
 
@@ -220,8 +228,98 @@ def return_loan(id):
 @app.get('/ai-insights')
 @login_required
 def ai_insights():
-    today = date.today(); overdue = Loan.query.filter(Loan.status == '借阅中', Loan.due_at < today).count(); out = Book.query.filter(Book.available_qty == 0).count()
-    return render_template('ai.html', overdue=overdue, out=out, active=Loan.query.filter_by(status='借阅中').count())
+    report = borrowing_report()
+    return render_template(
+        'ai.html',
+        **report,
+        ai_api_configured=bool(os.getenv('AI_API_KEY')),
+        generated_advice=session.pop('ai_generated_advice', None),
+    )
+
+
+def borrowing_report():
+    """将 MySQL 借阅数据聚合成可解释的运营指标。"""
+    today = date.today()
+
+    def count_for(days, before_days=0):
+        end = today - timedelta(days=before_days)
+        start = end - timedelta(days=days - 1)
+        return Loan.query.filter(Loan.borrowed_at.between(start, end)).count()
+
+    last_7, previous_7 = count_for(7), count_for(7, 7)
+    last_30, previous_30 = count_for(30), count_for(30, 30)
+    trend = None if previous_7 == 0 else round((last_7 - previous_7) / previous_7 * 100)
+    popular_now = (
+        db.session.query(Book.title, func.count(Loan.id).label('borrow_count'))
+        .join(Loan)
+        .filter(Loan.borrowed_at >= today - timedelta(days=29))
+        .group_by(Book.id, Book.title)
+        .order_by(func.count(Loan.id).desc(), Book.title)
+        .limit(5)
+        .all()
+    )
+    popular_all = (
+        db.session.query(Book.title, func.count(Loan.id).label('borrow_count'))
+        .join(Loan)
+        .group_by(Book.id, Book.title)
+        .order_by(func.count(Loan.id).desc(), Book.title)
+        .first()
+    )
+    overdue = Loan.query.filter(Loan.status == '借阅中', Loan.due_at < today).count()
+    out = Book.query.filter(Book.available_qty == 0).count()
+    active = Loan.query.filter_by(status='借阅中').count()
+    lead_title = popular_now[0].title if popular_now else (popular_all.title if popular_all else '暂无借阅数据')
+    return {
+        'today': today,
+        'active': active,
+        'overdue': overdue,
+        'out': out,
+        'last_7': last_7,
+        'previous_7': previous_7,
+        'last_30': last_30,
+        'previous_30': previous_30,
+        'trend': trend,
+        'popular_now': popular_now,
+        'popular_all': popular_all,
+        'lead_title': lead_title,
+    }
+
+
+@app.post('/ai-insights/generate')
+@login_required
+def generate_ai_advice():
+    """可选的 OpenAI 兼容 API 接口；未配置密钥时不会发出网络请求。"""
+    api_key = os.getenv('AI_API_KEY')
+    if not api_key:
+        flash('尚未配置 AI_API_KEY，当前页面仍可使用本地数据洞察。', 'danger')
+        return redirect(url_for('ai_insights'))
+
+    report = borrowing_report()
+    prompt = (
+        '你是校园图书馆运营分析助手。请仅基于下列统计，写 3 条简短、可执行的中文建议；'
+        '不要编造数据。\n'
+        f"近7天借阅 {report['last_7']} 次，前7天 {report['previous_7']} 次；"
+        f"近30天借阅 {report['last_30']} 次，前30天 {report['previous_30']} 次；"
+        f"当前在借 {report['active']} 本，逾期 {report['overdue']} 本，库存为0的图书 {report['out']} 本；"
+        f"近30天最受欢迎图书：{report['lead_title']}。"
+    )
+    payload = json.dumps({
+        'model': os.getenv('AI_MODEL', 'gpt-4o-mini'),
+        'messages': [{'role': 'user', 'content': prompt}],
+        'temperature': 0.3,
+    }).encode('utf-8')
+    base = os.getenv('AI_API_BASE', 'https://api.openai.com/v1').rstrip('/')
+    req = urlrequest.Request(
+        f'{base}/chat/completions', data=payload,
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, method='POST',
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=20) as response:
+            content = json.loads(response.read().decode('utf-8'))['choices'][0]['message']['content']
+        session['ai_generated_advice'] = content.strip()
+    except (urlerror.URLError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        flash(f'AI 服务暂时不可用：{exc}', 'danger')
+    return redirect(url_for('ai_insights'))
 
 
 @app.route('/admins', methods=['GET', 'POST'])

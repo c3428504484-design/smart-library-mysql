@@ -1,1 +1,38 @@
-{% extends 'base.html' %}{% block heading %}AI 运营洞察{% endblock %}{% block content %}<div class="grid"><div class="card metric"><b>{{active}}</b><p>当前借阅</p></div><div class="card metric"><b>{{overdue}}</b><p>逾期风险</p></div><div class="card metric"><b>{{out}}</b><p>缺货图书</p></div><div class="card metric"><b>可解释</b><p>分析依据</p></div></div><div class="card" style="margin-top:20px"><h3>数据驱动建议</h3><div class="insight">系统基于 MySQL 中的实时借阅、到期日与库存数据生成建议：{% if overdue %}请优先处理 {{overdue}} 条逾期记录，降低图书资产滞留。{% else %}当前没有逾期记录，读者履约情况良好。{% endif %}{% if out %} 有 {{out}} 本图书库存为 0，建议结合热门排行补充馆藏。{% endif %}<br><br>答辩展示点：该模块的所有结论可追溯到数据库聚合查询，避免“黑箱式”结论。</div></div>{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}AI 运营洞察{% endblock %}
+{% block content %}
+<div class="grid">
+  <div class="card metric"><b>{{ last_7 }}</b><p>近 7 天借阅</p></div>
+  <div class="card metric"><b>{{ last_30 }}</b><p>近 30 天借阅</p></div>
+  <div class="card metric"><b>{{ active }}</b><p>当前在借</p></div>
+  <div class="card metric"><b>{{ overdue }}</b><p>逾期风险</p></div>
+</div>
+<div class="modal" style="margin-top:20px">
+  <div class="card">
+    <h3>当下热门图书（近 30 天）</h3>
+    <table><tr><th>排名</th><th>图书</th><th>借阅次数</th></tr>
+      {% for item in popular_now %}<tr><td>#{{ loop.index }}</td><td><b>{{ item.title }}</b></td><td>{{ item.borrow_count }}</td></tr>
+      {% else %}<tr><td colspan="3">近 30 天暂无借阅记录</td></tr>{% endfor %}
+    </table>
+    <p class="muted">历史累计最受欢迎：{{ popular_all.title if popular_all else '暂无数据' }}{% if popular_all %}（{{ popular_all.borrow_count }} 次）{% endif %}</p>
+  </div>
+  <div class="card">
+    <h3>借阅活跃度</h3>
+    <div class="insight">
+      近 7 天：<b>{{ last_7 }}</b> 次；前 7 天：<b>{{ previous_7 }}</b> 次。<br>
+      {% if trend is none %}前一周期没有可对比的借阅数据。{% elif trend > 0 %}借阅活跃度上升 <b>{{ trend }}%</b>。{% elif trend < 0 %}借阅活跃度下降 <b>{{ trend|abs }}%</b>，建议结合热门书与活动调整推荐。{% else %}借阅活跃度与前一周期持平。{% endif %}
+      <br><br>近 30 天共借出 <b>{{ last_30 }}</b> 次（上一 30 天 {{ previous_30 }} 次）。当前最受欢迎的是《{{ lead_title }}》。
+    </div>
+  </div>
+</div>
+<div class="card" style="margin-top:20px"><h3>数据驱动建议</h3><div class="insight">
+  {% if overdue %}请优先处理 {{ overdue }} 条逾期记录，降低图书资产滞留。{% else %}当前没有逾期记录，读者履约情况良好。{% endif %}
+  {% if out %} 有 {{ out }} 本图书库存为 0，建议结合热门排行补充馆藏。{% endif %}
+  <br><br>以上结论来自 MySQL 聚合查询，可直接追溯到借阅、库存和到期日数据。
+</div></div>
+<div class="card" style="margin-top:20px"><h3>外部 AI 增强（可选）</h3>
+  <p class="muted">{% if ai_api_configured %}已检测到 AI_API_KEY，可生成针对当前统计的运营建议。{% else %}未配置密钥时，系统仅使用本地可解释数据分析，不会上传任何数据。{% endif %}</p>
+  <form method="post" action="{{ url_for('generate_ai_advice') }}"><button class="btn" {% if not ai_api_configured %}disabled{% endif %}>生成 AI 运营建议</button></form>
+  {% if generated_advice %}<div class="insight" style="margin-top:14px;white-space:pre-line">{{ generated_advice }}</div>{% endif %}
+</div>
+{% endblock %}
