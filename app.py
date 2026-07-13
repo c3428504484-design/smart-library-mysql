@@ -102,7 +102,7 @@ def seed():
         existing = {r.name for r in Reader.query.all()}
         db.session.add_all([Reader(name=n, phone=f'138{idx:08d}') for idx,n in enumerate(names, 10001) if n not in existing])
         db.session.commit()
-    if Loan.query.count() < 18:
+    if Loan.query.count() < 25:
         readers, books = Reader.query.order_by(Reader.id).all(), Book.query.order_by(Book.id).all()
         for i in range(min(24, len(readers), len(books))):
             book = books[i]
@@ -110,6 +110,18 @@ def seed():
                 due = date.today() + timedelta(days=(-i if i % 7 == 0 else 7 + i))
                 db.session.add(Loan(reader=readers[i], book=book, due_at=due, status='借阅中'))
                 book.available_qty -= 1
+        db.session.commit()
+    # 构造可用于排行榜和趋势图的历史借阅数据：热门书会被多次借阅。
+    if Loan.query.count() < 60:
+        readers, books = Reader.query.order_by(Reader.id).all(), Book.query.order_by(Book.id).all()
+        weights = [12, 10, 8, 6, 5, 4, 3, 3, 2, 2]
+        for book, times in zip(books[:10], weights):
+            current = Loan.query.filter_by(book_id=book.id).count()
+            for n in range(max(0, times - current)):
+                borrowed = date.today() - timedelta(days=20 + n * 3)
+                db.session.add(Loan(reader=readers[(book.id + n) % len(readers)], book=book,
+                                    borrowed_at=borrowed, due_at=borrowed + timedelta(days=30),
+                                    returned_at=borrowed + timedelta(days=12), status='已归还'))
         db.session.commit()
 
 
