@@ -83,17 +83,33 @@ def seed():
     if not Category.query.first():
         db.session.add_all([Category(name='计算机'), Category(name='经济管理'), Category(name='文学')])
         db.session.commit()
-    if not Book.query.first():
+    if Book.query.count() < 30:
         cats = {c.name: c for c in Category.query.all()}
-        db.session.add_all([
-            Book(isbn='9787111128069', title='深入理解计算机系统', author='Randal Bryant', category=cats['计算机'], total_qty=8, available_qty=6),
-            Book(isbn='9787111681559', title='Python 数据分析', author='Wes McKinney', category=cats['计算机'], total_qty=6, available_qty=6),
-            Book(isbn='9787300299797', title='经济学原理', author='N. Gregory Mankiw', category=cats['经济管理'], total_qty=5, available_qty=4),
-        ])
-        db.session.add_all([Reader(name='李明', phone='13800001111'), Reader(name='陈晓', phone='13900002222'), Reader(name='周宁', phone='13700003333')])
+        samples = [
+            ('深入理解计算机系统','Randal Bryant','计算机'),('Python 数据分析','Wes McKinney','计算机'),('经济学原理','N. Gregory Mankiw','经济管理'),
+            ('算法导论','Thomas Cormen','计算机'),('数据库系统概念','Abraham Silberschatz','计算机'),('操作系统导论','Remzi Arpaci-Dusseau','计算机'),
+            ('机器学习','周志华','计算机'),('深度学习','Ian Goodfellow','计算机'),('计算机网络','谢希仁','计算机'),('代码整洁之道','Robert Martin','计算机'),
+            ('人类简史','尤瓦尔·赫拉利','文学'),('百年孤独','加西亚·马尔克斯','文学'),('活着','余华','文学'),('围城','钱钟书','文学'),
+            ('平凡的世界','路遥','文学'),('解忧杂货店','东野圭吾','文学'),('月亮与六便士','毛姆','文学'),('小王子','圣埃克苏佩里','文学'),
+            ('国富论','亚当·斯密','经济管理'),('资本论','马克思','经济管理'),('原则','瑞·达利欧','经济管理'),('穷查理宝典','彼得·考夫曼','经济管理'),
+            ('投资学','博迪','经济管理'),('金融学','黄达','经济管理'),('经济解释','张五常','经济管理'),('管理学','斯蒂芬·罗宾斯','经济管理'),
+            ('统计学','贾俊平','经济管理'),('时间简史','史蒂芬·霍金','文学'),('苏菲的世界','乔斯坦·贾德','文学'),('思考，快与慢','丹尼尔·卡尼曼','经济管理'),
+        ]
+        existing = {b.title for b in Book.query.all()}
+        db.session.add_all([Book(isbn=f'9787000{i:06d}', title=t, author=a, category=cats[c], total_qty=5+i%6, available_qty=5+i%6) for i,(t,a,c) in enumerate(samples, 1) if t not in existing])
+    if Reader.query.count() < 20:
+        names = ['李明','陈晓','周宁','王晨','赵琳','刘洋','孙悦','黄磊','吴静','徐涛','何雨','马超','朱莉','郭峰','林清','宋扬','唐薇','罗浩','许诺','邓洁','方宇','谢欣','潘博','程雪','冯凯']
+        existing = {r.name for r in Reader.query.all()}
+        db.session.add_all([Reader(name=n, phone=f'138{idx:08d}') for idx,n in enumerate(names, 10001) if n not in existing])
         db.session.commit()
-        db.session.add(Loan(reader=Reader.query.first(), book=Book.query.first(), due_at=date.today()+timedelta(days=21)))
-        Book.query.first().available_qty -= 1
+    if Loan.query.count() < 18:
+        readers, books = Reader.query.order_by(Reader.id).all(), Book.query.order_by(Book.id).all()
+        for i in range(min(24, len(readers), len(books))):
+            book = books[i]
+            if book.available_qty > 0:
+                due = date.today() + timedelta(days=(-i if i % 7 == 0 else 7 + i))
+                db.session.add(Loan(reader=readers[i], book=book, due_at=due, status='借阅中'))
+                book.available_qty -= 1
         db.session.commit()
 
 
